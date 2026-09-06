@@ -40,7 +40,7 @@ Requirements:
 
 - CMake 3.24+
 - C++20 compiler
-- Qt 6.5+ Core and Widgets development packages
+- Qt 6.4+ Core and Widgets development packages
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
