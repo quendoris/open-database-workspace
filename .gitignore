@@ -1,0 +1,11 @@
+/build/
+/build-*/
+/.cache/
+/.idea/
+/.vscode/
+CMakeUserPresets.json
+*.user
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
