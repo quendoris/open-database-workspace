@@ -94,6 +94,9 @@ void AdaptiveInspector::applyPresentation(PresentationMode mode) {
         layout_->removeWidget(keys_[index]);
         layout_->removeWidget(values_[index]);
     }
+    for (int row = 0; row <= 8; ++row) {
+        layout_->setRowStretch(row, 0);
+    }
 
     const bool expanded = mode == PresentationMode::Expanded;
     for (std::size_t index = 0; index < keys_.size(); ++index) {

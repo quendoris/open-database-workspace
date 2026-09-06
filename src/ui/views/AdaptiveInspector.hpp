@@ -35,8 +35,8 @@ private:
     void updatePresentation();
     void applyPresentation(PresentationMode mode);
 
-    static constexpr int kNormalWidth = 170;
-    static constexpr int kExpandedWidth = 310;
+    static constexpr int kNormalWidth = 160;
+    static constexpr int kExpandedWidth = 260;
 
     QGridLayout* layout_ = nullptr;
     std::array<QLabel*, 4> keys_{};

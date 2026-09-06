@@ -60,15 +60,53 @@ QWidget#odwCanvas {
     background: @canvas@;
 }
 
+QToolBar {
+    background: @canvas@;
+    border: 0;
+    border-bottom: 1px solid @borderSubtle@;
+    padding: 4px 5px;
+    spacing: 5px;
+}
+
+QToolBar::separator {
+    background: @borderSubtle@;
+    width: 1px;
+    margin: 6px 4px;
+}
+
+QStatusBar {
+    background: @canvas@;
+    color: @textSecondary@;
+    border-top: 1px solid @borderSubtle@;
+}
+
 QLabel#odwEmptyTitle {
     color: @textPrimary@;
     font-size: 22px;
     font-weight: 600;
 }
 
-QLabel#odwEmptySubtitle {
+QLabel#odwEmptySubtitle,
+QLabel#odwSecondaryText,
+QLabel#odwInspectorKey {
     color: @textSecondary@;
-    font-size: 13px;
+}
+
+QLabel#odwInspectorKey {
+    font-size: 11px;
+}
+
+QLabel#odwInspectorValue {
+    color: @textPrimary@;
+    font-weight: 500;
+}
+
+QLabel#odwPipelineSummary {
+    background: @raised@;
+    color: @textPrimary@;
+    border: 1px solid @borderSubtle@;
+    border-radius: @radiusSmall@px;
+    padding: 9px 10px;
 }
 
 QDockWidget {
@@ -106,7 +144,8 @@ QTreeView::item, QListView::item {
     border-radius: @radiusSmall@px;
 }
 
-QTreeView::item:hover, QListView::item:hover {
+QTreeView::item:hover, QListView::item:hover,
+QTableView::item:hover, QTableWidget::item:hover {
     background: @hover@;
 }
 
@@ -133,10 +172,6 @@ QTableView, QTableWidget {
 QTableView::item, QTableWidget::item {
     padding: 5px 8px;
     border: 0;
-}
-
-QTableView::item:hover, QTableWidget::item:hover {
-    background: @hover@;
 }
 
 QTabWidget::pane {
@@ -179,6 +214,11 @@ QPushButton:hover, QToolButton:hover {
 
 QPushButton:pressed, QToolButton:pressed {
     background: @accentSoft@;
+}
+
+QPushButton:disabled, QToolButton:disabled {
+    color: @textSecondary@;
+    background: @panel@;
 }
 
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus,
