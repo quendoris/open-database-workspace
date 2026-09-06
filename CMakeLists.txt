@@ -40,6 +40,10 @@ add_executable(odw
     src/app/main.cpp
     src/ui/MainWindow.cpp
     src/ui/MainWindow.hpp
+    src/ui/views/AdaptiveInspector.cpp
+    src/ui/views/AdaptiveInspector.hpp
+    src/ui/widgets/ElidedLabel.cpp
+    src/ui/widgets/ElidedLabel.hpp
     src/ui/theme/VisualTheme.cpp
     src/ui/theme/VisualTheme.hpp
 )
