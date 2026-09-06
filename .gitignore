@@ -3,6 +3,7 @@
 /.cache/
 /.idea/
 /.vscode/
+/artifacts/
 CMakeUserPresets.json
 *.user
 *.swp
