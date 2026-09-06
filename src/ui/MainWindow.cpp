@@ -1,10 +1,13 @@
 #include "MainWindow.hpp"
 
+#include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QDir>
 #include <QDockWidget>
 #include <QEvent>
 #include <QFile>
+#include <QFontDatabase>
+#include <QHeaderView>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
@@ -17,14 +20,16 @@
 #include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QVBoxLayout>
+#include <QWidget>
 
 namespace odw::ui {
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),
       persistTimer_(new QTimer(this)) {
-    setWindowTitle(QStringLiteral("Open Database Workspace — prototype"));
-    resize(1280, 800);
+    setWindowTitle(QStringLiteral("ODW — Open Database Workspace"));
+    resize(1440, 900);
 
     setDockNestingEnabled(true);
     setDockOptions(QMainWindow::AnimatedDocks |
@@ -51,26 +56,54 @@ QDockWidget* MainWindow::createDock(const QString& title,
 }
 
 void MainWindow::buildDemoWorkspace() {
-    auto* center = new QLabel(
-        QStringLiteral("ODW foundation prototype\n\n"
-                       "Every surrounding view can be moved, tabbed or detached.\n"
-                       "There is deliberately no Save command."),
-        this);
-    center->setAlignment(Qt::AlignCenter);
-    setCentralWidget(center);
+    auto* canvas = new QWidget(this);
+    canvas->setObjectName(QStringLiteral("odwCanvas"));
+
+    auto* canvasLayout = new QVBoxLayout(canvas);
+    canvasLayout->setContentsMargins(48, 48, 48, 48);
+    canvasLayout->setSpacing(8);
+    canvasLayout->addStretch(1);
+
+    auto* title = new QLabel(QStringLiteral("Open Database Workspace"), canvas);
+    title->setObjectName(QStringLiteral("odwEmptyTitle"));
+    title->setAlignment(Qt::AlignCenter);
+
+    auto* subtitle = new QLabel(
+        QStringLiteral("A durable, composable workspace for your data.\n"
+                       "Move, tab, split or detach the surrounding views."),
+        canvas);
+    subtitle->setObjectName(QStringLiteral("odwEmptySubtitle"));
+    subtitle->setAlignment(Qt::AlignCenter);
+
+    canvasLayout->addWidget(title);
+    canvasLayout->addWidget(subtitle);
+    canvasLayout->addStretch(1);
+    setCentralWidget(canvas);
 
     auto* databases = new QTreeWidget(this);
     databases->setHeaderHidden(true);
+    databases->setIndentation(14);
+    databases->setUniformRowHeights(true);
     auto* connection = new QTreeWidgetItem(databases, {QStringLiteral("Local PostgreSQL")});
-    new QTreeWidgetItem(connection, {QStringLiteral("Schemas")});
+    auto* schemas = new QTreeWidgetItem(connection, {QStringLiteral("Schemas")});
+    new QTreeWidgetItem(schemas, {QStringLiteral("public")});
     new QTreeWidgetItem(connection, {QStringLiteral("Tables")});
     connection->setExpanded(true);
+    schemas->setExpanded(true);
 
     queryEditor_ = new QTextEdit(this);
-    queryEditor_->setPlaceholderText(QStringLiteral("Write SQL here…"));
+    queryEditor_->setAcceptRichText(false);
+    queryEditor_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    queryEditor_->setPlaceholderText(QStringLiteral("Write SQL…"));
     queryEditor_->setPlainText(QStringLiteral("SELECT *\nFROM example;"));
 
     auto* results = new QTableWidget(8, 4, this);
+    results->setAlternatingRowColors(true);
+    results->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    results->setSelectionBehavior(QAbstractItemView::SelectItems);
+    results->verticalHeader()->setVisible(false);
+    results->verticalHeader()->setDefaultSectionSize(30);
+    results->horizontalHeader()->setStretchLastSection(true);
     results->setHorizontalHeaderLabels({
         QStringLiteral("id"),
         QStringLiteral("name"),
@@ -86,11 +119,12 @@ void MainWindow::buildDemoWorkspace() {
     }
 
     auto* inspector = new QListWidget(this);
+    inspector->setUniformItemSizes(true);
     inspector->addItems({
-        QStringLiteral("Type: table"),
-        QStringLiteral("Rows: unknown"),
-        QStringLiteral("Primary key: id"),
-        QStringLiteral("Connector capabilities: prototype")
+        QStringLiteral("Type    table"),
+        QStringLiteral("Rows    unknown"),
+        QStringLiteral("PK      id"),
+        QStringLiteral("Source  prototype connector")
     });
 
     auto* databaseDock = createDock(QStringLiteral("Databases"),
@@ -114,6 +148,9 @@ void MainWindow::buildDemoWorkspace() {
     splitDockWidget(databaseDock, queryDock, Qt::Horizontal);
     splitDockWidget(queryDock, inspectorDock, Qt::Horizontal);
     splitDockWidget(queryDock, resultsDock, Qt::Vertical);
+
+    resizeDocks({databaseDock, queryDock, inspectorDock}, {260, 760, 280}, Qt::Horizontal);
+    resizeDocks({queryDock, resultsDock}, {470, 300}, Qt::Vertical);
 }
 
 void MainWindow::wireDurableState() {
