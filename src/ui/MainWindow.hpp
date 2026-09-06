@@ -2,7 +2,9 @@
 
 #include <QMainWindow>
 
+class QCloseEvent;
 class QDockWidget;
+class QEvent;
 class QTextEdit;
 class QTimer;
 class QWidget;
@@ -16,6 +18,7 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
 
 protected:
+    bool event(QEvent* event) override;
     void closeEvent(QCloseEvent* event) override;
 
 private:
