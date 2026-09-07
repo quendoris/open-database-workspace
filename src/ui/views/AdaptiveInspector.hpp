@@ -7,6 +7,7 @@
 class QGridLayout;
 class QLabel;
 class QResizeEvent;
+class QString;
 
 namespace odw::ui::widgets {
 class ElidedLabel;
@@ -23,6 +24,11 @@ public:
     };
 
     explicit AdaptiveInspector(QWidget* parent = nullptr);
+
+    void setObjectDetails(const QString& objectType,
+                          const QString& rows,
+                          const QString& primaryKey,
+                          const QString& source);
 
     [[nodiscard]] PresentationMode presentationMode() const noexcept;
     [[nodiscard]] QSize sizeHint() const override;
@@ -41,6 +47,7 @@ private:
     QGridLayout* layout_ = nullptr;
     std::array<QLabel*, 4> keys_{};
     std::array<widgets::ElidedLabel*, 4> values_{};
+    std::array<QString, 4> valueTexts_{};
     PresentationMode mode_ = PresentationMode::Expanded;
 };
 

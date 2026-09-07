@@ -2,11 +2,14 @@
 
 #include "views/AdaptiveInspector.hpp"
 
+#include <kddockwidgets/DockWidget.h>
+#include <kddockwidgets/LayoutSaver.h>
+#include <kddockwidgets/core/MainWindow.h>
+
 #include <QAbstractItemView>
 #include <QAction>
 #include <QCloseEvent>
 #include <QDir>
-#include <QDockWidget>
 #include <QEvent>
 #include <QFile>
 #include <QFont>
@@ -17,12 +20,14 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPushButton>
 #include <QSaveFile>
 #include <QSignalBlocker>
+#include <QSplitter>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QTabWidget>
 #include <QTableWidget>
+#include <QTableWidgetItem>
 #include <QTextEdit>
 #include <QTimer>
 #include <QToolBar>
@@ -34,9 +39,551 @@
 namespace odw::ui {
 namespace {
 
-QWidget* makeAutomationView(QWidget* parent) {
+constexpr int kObjectTypeRole = Qt::UserRole;
+constexpr int kObjectNameRole = Qt::UserRole + 1;
+
+QTableWidget* createDataGrid(QWidget* parent,
+                             const QStringList& headers,
+                             const QList<QStringList>& rows) {
+    auto* table = new QTableWidget(rows.size(), headers.size(), parent);
+    table->setHorizontalHeaderLabels(headers);
+    table->setAlternatingRowColors(true);
+    table->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    table->setSelectionBehavior(QAbstractItemView::SelectItems);
+    table->verticalHeader()->setVisible(false);
+    table->verticalHeader()->setDefaultSectionSize(30);
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+
+    for (qsizetype row = 0; row < rows.size(); ++row) {
+        const QStringList& values = rows.at(row);
+        for (qsizetype column = 0; column < values.size(); ++column) {
+            auto* item = new QTableWidgetItem(values.at(column));
+            if (values.at(column) == QStringLiteral("NULL")) {
+                QFont font = item->font();
+                font.setItalic(true);
+                item->setFont(font);
+                item->setToolTip(QStringLiteral("SQL NULL"));
+            }
+            table->setItem(static_cast<int>(row), static_cast<int>(column), item);
+        }
+    }
+
+    return table;
+}
+
+QList<QStringList> usersRows() {
+    QList<QStringList> rows;
+    for (int row = 0; row < 12; ++row) {
+        const int id = 101 + row;
+        rows.append({
+            QString::number(id),
+            QStringLiteral("user_%1").arg(id),
+            row == 4 ? QStringLiteral("NULL")
+                     : QStringLiteral("user%1@example.dev").arg(id),
+            row % 3 == 0 ? QStringLiteral("pending") : QStringLiteral("active"),
+            QStringLiteral("2026-09-%1  1%2:%3")
+                .arg(6 - (row % 6), 2, 10, QLatin1Char('0'))
+                .arg(row % 10)
+                .arg((row * 7) % 60, 2, 10, QLatin1Char('0')),
+            row == 8 ? QStringLiteral("NULL")
+                     : QStringLiteral("%1.%2")
+                           .arg(120 + row * 17)
+                           .arg((row * 13) % 100, 2, 10, QLatin1Char('0')),
+        });
+    }
+    return rows;
+}
+
+QList<QStringList> ordersRows() {
+    QList<QStringList> rows;
+    for (int row = 0; row < 10; ++row) {
+        rows.append({
+            QString::number(5001 + row),
+            QString::number(101 + (row % 7)),
+            QStringLiteral("%1.%2")
+                .arg(48 + row * 23)
+                .arg((row * 19) % 100, 2, 10, QLatin1Char('0')),
+            row % 4 == 0 ? QStringLiteral("processing") : QStringLiteral("paid"),
+            QStringLiteral("2026-09-%1  %2:%3")
+                .arg(6 - (row % 5), 2, 10, QLatin1Char('0'))
+                .arg(9 + row, 2, 10, QLatin1Char('0'))
+                .arg((row * 11) % 60, 2, 10, QLatin1Char('0')),
+        });
+    }
+    return rows;
+}
+
+QList<QStringList> recentOrdersRows() {
+    QList<QStringList> rows;
+    const auto source = ordersRows();
+    for (int row = 0; row < 6; ++row) {
+        rows.append(source.at(row));
+    }
+    return rows;
+}
+
+QWidget* wrapGrid(const QString& countText, QTableWidget* grid, QWidget* parent) {
     auto* root = new QWidget(parent);
-    root->setObjectName(QStringLiteral("odwAutomationView"));
+    auto* layout = new QVBoxLayout(root);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    auto* filterRow = new QWidget(root);
+    auto* filterLayout = new QHBoxLayout(filterRow);
+    filterLayout->setContentsMargins(0, 0, 0, 0);
+    filterLayout->setSpacing(8);
+
+    auto* filter = new QLineEdit(filterRow);
+    filter->setPlaceholderText(QStringLiteral("Filter visible rows…"));
+    auto* count = new QLabel(countText, filterRow);
+    count->setObjectName(QStringLiteral("odwSecondaryText"));
+
+    filterLayout->addWidget(filter, 1);
+    filterLayout->addWidget(count);
+    layout->addWidget(filterRow);
+    layout->addWidget(grid, 1);
+
+    QObject::connect(filter, &QLineEdit::textChanged, grid, [grid](const QString& text) {
+        for (int row = 0; row < grid->rowCount(); ++row) {
+            bool match = text.trimmed().isEmpty();
+            for (int column = 0; !match && column < grid->columnCount(); ++column) {
+                const auto* item = grid->item(row, column);
+                match = item != nullptr && item->text().contains(text, Qt::CaseInsensitive);
+            }
+            grid->setRowHidden(row, !match);
+        }
+    });
+
+    return root;
+}
+
+QWidget* createStructureView(const QString& objectName,
+                             const QString& objectType,
+                             QWidget* parent) {
+    auto* root = new QWidget(parent);
+    auto* layout = new QVBoxLayout(root);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(8);
+
+    auto* summary = new QLabel(
+        QStringLiteral("public.%1   ·   %2   ·   PostgreSQL · local")
+            .arg(objectName, objectType),
+        root);
+    summary->setObjectName(QStringLiteral("odwSecondaryText"));
+    layout->addWidget(summary);
+
+    QStringList headers{
+        QStringLiteral("column"),
+        QStringLiteral("type"),
+        QStringLiteral("nullable"),
+        QStringLiteral("key"),
+    };
+    QList<QStringList> rows;
+
+    if (objectName == QStringLiteral("users")) {
+        rows = {
+            {QStringLiteral("id"), QStringLiteral("bigint"), QStringLiteral("no"), QStringLiteral("PK")},
+            {QStringLiteral("name"), QStringLiteral("text"), QStringLiteral("no"), QString()},
+            {QStringLiteral("email"), QStringLiteral("text"), QStringLiteral("yes"), QStringLiteral("unique")},
+            {QStringLiteral("status"), QStringLiteral("user_status"), QStringLiteral("no"), QString()},
+            {QStringLiteral("created_at"), QStringLiteral("timestamptz"), QStringLiteral("no"), QString()},
+            {QStringLiteral("balance"), QStringLiteral("numeric(12,2)"), QStringLiteral("yes"), QString()},
+        };
+    } else {
+        rows = {
+            {QStringLiteral("id"), QStringLiteral("bigint"), QStringLiteral("no"), QStringLiteral("PK")},
+            {QStringLiteral("user_id"), QStringLiteral("bigint"), QStringLiteral("no"), QStringLiteral("FK")},
+            {QStringLiteral("total"), QStringLiteral("numeric(12,2)"), QStringLiteral("no"), QString()},
+            {QStringLiteral("state"), QStringLiteral("text"), QStringLiteral("no"), QString()},
+            {QStringLiteral("created_at"), QStringLiteral("timestamptz"), QStringLiteral("no"), QString()},
+        };
+    }
+
+    auto* structure = createDataGrid(root, headers, rows);
+    structure->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    structure->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    layout->addWidget(structure, 1);
+    return root;
+}
+
+} // namespace
+
+MainWindow::MainWindow(bool restorePersistentState, QWidget* parent)
+    : KDDockWidgets::QtWidgets::MainWindow(
+          QStringLiteral("odw.main-window"),
+          KDDockWidgets::MainWindowOption_HasCentralGroup,
+          parent),
+      persistTimer_(new QTimer(this)),
+      persistenceEnabled_(restorePersistentState) {
+    setWindowTitle(QStringLiteral("ODW — Open Database Workspace"));
+    resize(1440, 900);
+
+    setAffinities({QStringLiteral("odw.tools"), QStringLiteral("odw.documents")});
+    mainWindow()->setDocumentAffinity(QStringLiteral("odw.documents"));
+
+    buildWorkspace();
+    wireDurableState();
+
+    if (persistenceEnabled_) {
+        restoreWorkspace();
+    }
+}
+
+MainWindow::DockWidget* MainWindow::createToolDock(const QString& title,
+                                                   const QString& uniqueName,
+                                                   QWidget* content) {
+    auto* dock = new DockWidget(uniqueName);
+    dock->setTitle(title);
+    dock->setWidget(content);
+    dock->setAffinities({QStringLiteral("odw.tools")});
+    wireDockPersistence(dock);
+    return dock;
+}
+
+MainWindow::DockWidget* MainWindow::createDocumentDock(const QString& title,
+                                                       const QString& uniqueName,
+                                                       QWidget* content) {
+    auto* dock = new DockWidget(uniqueName);
+    dock->setTitle(title);
+    dock->setWidget(content);
+    dock->setAffinities({QStringLiteral("odw.documents")});
+    wireDockPersistence(dock);
+    return dock;
+}
+
+void MainWindow::buildWorkspace() {
+    auto* toolbar = addToolBar(QStringLiteral("Workspace"));
+    toolbar->setObjectName(QStringLiteral("odwMainToolbar"));
+    toolbar->setMovable(false);
+    toolbar->setFloatable(false);
+
+    auto* connectionAction = toolbar->addAction(QStringLiteral("＋ Connection"));
+    auto* queryAction = toolbar->addAction(QStringLiteral("＋ Query"));
+    auto* automationAction = toolbar->addAction(QStringLiteral("Automation"));
+    toolbar->addSeparator();
+    runAction_ = toolbar->addAction(QStringLiteral("▶ Run"));
+    stopAction_ = toolbar->addAction(QStringLiteral("■ Stop"));
+    toolbar->addSeparator();
+    auto* appearanceAction = toolbar->addAction(QStringLiteral("Appearance"));
+
+    runAction_->setEnabled(false);
+    stopAction_->setEnabled(false);
+
+    buildConnections();
+
+    inspector_ = new views::AdaptiveInspector();
+    inspectorDock_ = createToolDock(
+        QStringLiteral("Inspector"),
+        QStringLiteral("odw.tool.inspector"),
+        inspector_);
+
+    mainWindow()->addDockWidgetToSide(
+        connectionsDock_->asDockWidgetController(),
+        KDDockWidgets::Location_OnLeft);
+    mainWindow()->addDockWidgetToSide(
+        inspectorDock_->asDockWidgetController(),
+        KDDockWidgets::Location_OnRight);
+
+    registerDocuments();
+
+    connect(connectionAction, &QAction::triggered, this, [this] {
+        statusBar()->showMessage(
+            QStringLiteral("Connection editor comes next; Git is not a permanent workspace mode."),
+            3500);
+    });
+
+    connect(queryAction, &QAction::triggered, this, [this] {
+        openDocument(QStringLiteral("query"));
+    });
+
+    connect(automationAction, &QAction::triggered, this, [this] {
+        openDocument(QStringLiteral("automation"));
+    });
+
+    connect(runAction_, &QAction::triggered, this, [this] {
+        if (queryDock_ == nullptr || !queryDock_->isOpen()) {
+            return;
+        }
+        queryDock_->raise();
+        statusBar()->showMessage(QStringLiteral("Mock query completed · 12 rows · 18 ms"), 3500);
+    });
+
+    connect(appearanceAction, &QAction::triggered, this, [this] {
+        statusBar()->showMessage(
+            QStringLiteral("Appearance remains a dedicated tool, not a workspace document."),
+            3000);
+    });
+
+    statusBar()->showMessage(
+        QStringLiteral("Double-click a table or view. Every document tab can be moved or detached."));
+}
+
+void MainWindow::buildConnections() {
+    connectionsTree_ = new QTreeWidget();
+    connectionsTree_->setHeaderHidden(true);
+    connectionsTree_->setIndentation(14);
+    connectionsTree_->setUniformRowHeights(true);
+    connectionsTree_->setMinimumWidth(150);
+
+    auto* connection = new QTreeWidgetItem(
+        connectionsTree_, {QStringLiteral("PostgreSQL · local")});
+    auto* schemas = new QTreeWidgetItem(connection, {QStringLiteral("Schemas")});
+    auto* publicSchema = new QTreeWidgetItem(schemas, {QStringLiteral("public")});
+    auto* tables = new QTreeWidgetItem(publicSchema, {QStringLiteral("Tables")});
+
+    auto* users = new QTreeWidgetItem(tables, {QStringLiteral("users")});
+    users->setData(0, kObjectTypeRole, QStringLiteral("table"));
+    users->setData(0, kObjectNameRole, QStringLiteral("users"));
+
+    auto* orders = new QTreeWidgetItem(tables, {QStringLiteral("orders")});
+    orders->setData(0, kObjectTypeRole, QStringLiteral("table"));
+    orders->setData(0, kObjectNameRole, QStringLiteral("orders"));
+
+    auto* views = new QTreeWidgetItem(publicSchema, {QStringLiteral("Views")});
+    auto* recentOrders = new QTreeWidgetItem(views, {QStringLiteral("recent_orders")});
+    recentOrders->setData(0, kObjectTypeRole, QStringLiteral("view"));
+    recentOrders->setData(0, kObjectNameRole, QStringLiteral("recent_orders"));
+
+    new QTreeWidgetItem(publicSchema, {QStringLiteral("Functions")});
+
+    connection->setExpanded(true);
+    schemas->setExpanded(true);
+    publicSchema->setExpanded(true);
+    tables->setExpanded(true);
+    views->setExpanded(true);
+
+    connect(connectionsTree_, &QTreeWidget::itemDoubleClicked, this,
+            [this](QTreeWidgetItem* item, int) {
+                if (item == nullptr) {
+                    return;
+                }
+                const QString objectName = item->data(0, kObjectNameRole).toString();
+                if (!objectName.isEmpty()) {
+                    openDocument(QStringLiteral("object:%1").arg(objectName));
+                }
+            });
+
+    connect(connectionsTree_, &QTreeWidget::itemSelectionChanged, this, [this] {
+        const auto selected = connectionsTree_->selectedItems();
+        if (selected.isEmpty()) {
+            return;
+        }
+        const auto* item = selected.constFirst();
+        const QString type = item->data(0, kObjectTypeRole).toString();
+        const QString name = item->data(0, kObjectNameRole).toString();
+        if (name.isEmpty()) {
+            return;
+        }
+
+        const QString rows = name == QStringLiteral("users")
+                                 ? QStringLiteral("12 mock rows")
+                                 : name == QStringLiteral("orders")
+                                       ? QStringLiteral("10 mock rows")
+                                       : QStringLiteral("6 mock rows");
+        const QString primaryKey = type == QStringLiteral("view")
+                                       ? QStringLiteral("—")
+                                       : QStringLiteral("id");
+        inspectObject(type, rows, primaryKey, QStringLiteral("PostgreSQL · local"));
+    });
+
+    connectionsDock_ = createToolDock(
+        QStringLiteral("Connections"),
+        QStringLiteral("odw.tool.connections"),
+        connectionsTree_);
+}
+
+void MainWindow::registerDocuments() {
+    auto* usersDock = createDocumentDock(
+        QStringLiteral("users"),
+        QStringLiteral("odw.document.table.users"),
+        makeTableDocument(QStringLiteral("users"), QStringLiteral("table")));
+    documents_.insert(QStringLiteral("object:users"), usersDock);
+
+    auto* ordersDock = createDocumentDock(
+        QStringLiteral("orders"),
+        QStringLiteral("odw.document.table.orders"),
+        makeTableDocument(QStringLiteral("orders"), QStringLiteral("table")));
+    documents_.insert(QStringLiteral("object:orders"), ordersDock);
+
+    auto* recentOrdersDock = createDocumentDock(
+        QStringLiteral("recent_orders"),
+        QStringLiteral("odw.document.view.recent-orders"),
+        makeTableDocument(QStringLiteral("recent_orders"), QStringLiteral("view")));
+    documents_.insert(QStringLiteral("object:recent_orders"), recentOrdersDock);
+
+    queryDock_ = createDocumentDock(
+        QStringLiteral("Query"),
+        QStringLiteral("odw.document.query.1"),
+        makeQueryDocument());
+    documents_.insert(QStringLiteral("query"), queryDock_);
+
+    automationDock_ = createDocumentDock(
+        QStringLiteral("Automation"),
+        QStringLiteral("odw.document.automation"),
+        makeAutomationDocument());
+    documents_.insert(QStringLiteral("automation"), automationDock_);
+
+    addDockWidgetAsTab(usersDock);
+    usersDock->addDockWidgetAsTab(ordersDock);
+    usersDock->addDockWidgetAsTab(recentOrdersDock);
+    usersDock->addDockWidgetAsTab(queryDock_);
+    usersDock->addDockWidgetAsTab(automationDock_);
+
+    ordersDock->forceClose();
+    recentOrdersDock->forceClose();
+    queryDock_->forceClose();
+    automationDock_->forceClose();
+    usersDock->raise();
+
+    connect(queryDock_, &DockWidget::isCurrentTabChanged, this, [this](bool current) {
+        runAction_->setEnabled(current && queryDock_->isOpen());
+    });
+    connect(queryDock_, &DockWidget::isOpenChanged, this, [this](bool open) {
+        if (!open) {
+            runAction_->setEnabled(false);
+        }
+    });
+
+    inspectObject(
+        QStringLiteral("table"),
+        QStringLiteral("12 mock rows"),
+        QStringLiteral("id"),
+        QStringLiteral("PostgreSQL · local"));
+}
+
+void MainWindow::openDocument(const QString& id) {
+    DockWidget* dock = documents_.value(id, nullptr);
+    if (dock == nullptr) {
+        return;
+    }
+
+    if (!dock->isOpen()) {
+        dock->open();
+    }
+    dock->raise();
+
+    if (id.startsWith(QStringLiteral("object:"))) {
+        const QString name = id.mid(QStringLiteral("object:").size());
+        const QString type = name == QStringLiteral("recent_orders")
+                                 ? QStringLiteral("view")
+                                 : QStringLiteral("table");
+        const QString rows = name == QStringLiteral("users")
+                                 ? QStringLiteral("12 mock rows")
+                                 : name == QStringLiteral("orders")
+                                       ? QStringLiteral("10 mock rows")
+                                       : QStringLiteral("6 mock rows");
+        inspectObject(
+            type,
+            rows,
+            type == QStringLiteral("view") ? QStringLiteral("—") : QStringLiteral("id"),
+            QStringLiteral("PostgreSQL · local"));
+    }
+
+    schedulePersist();
+}
+
+void MainWindow::inspectObject(const QString& type,
+                               const QString& rows,
+                               const QString& primaryKey,
+                               const QString& source) {
+    if (inspector_ != nullptr) {
+        inspector_->setObjectDetails(type, rows, primaryKey, source);
+    }
+}
+
+QWidget* MainWindow::makeTableDocument(const QString& objectName,
+                                       const QString& objectType) {
+    auto* tabs = new QTabWidget();
+    tabs->setDocumentMode(true);
+
+    QStringList headers;
+    QList<QStringList> rows;
+    if (objectName == QStringLiteral("users")) {
+        headers = {
+            QStringLiteral("id"),
+            QStringLiteral("name"),
+            QStringLiteral("email"),
+            QStringLiteral("status"),
+            QStringLiteral("created_at"),
+            QStringLiteral("balance"),
+        };
+        rows = usersRows();
+    } else {
+        headers = {
+            QStringLiteral("id"),
+            QStringLiteral("user_id"),
+            QStringLiteral("total"),
+            QStringLiteral("state"),
+            QStringLiteral("created_at"),
+        };
+        rows = objectName == QStringLiteral("orders") ? ordersRows() : recentOrdersRows();
+    }
+
+    auto* grid = createDataGrid(tabs, headers, rows);
+    if (headers.size() >= 2) {
+        grid->setColumnWidth(0, 90);
+        grid->setColumnWidth(1, 140);
+    }
+    if (objectName == QStringLiteral("users")) {
+        grid->setColumnWidth(2, 220);
+        grid->setColumnWidth(4, 180);
+    }
+
+    tabs->addTab(
+        wrapGrid(QStringLiteral("%1 rows · mock data").arg(rows.size()), grid, tabs),
+        QStringLiteral("Data"));
+    tabs->addTab(
+        createStructureView(objectName, objectType, tabs),
+        QStringLiteral("Structure"));
+    return tabs;
+}
+
+QWidget* MainWindow::makeQueryDocument() {
+    auto* root = new QWidget();
+    auto* layout = new QVBoxLayout(root);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    auto* context = new QLabel(QStringLiteral("PostgreSQL · local   /   public"), root);
+    context->setObjectName(QStringLiteral("odwSecondaryText"));
+    layout->addWidget(context);
+
+    auto* splitter = new QSplitter(Qt::Vertical, root);
+    queryEditor_ = new QTextEdit(splitter);
+    queryEditor_->setAcceptRichText(false);
+    queryEditor_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    queryEditor_->setPlaceholderText(QStringLiteral("Write SQL…"));
+    queryEditor_->setPlainText(
+        QStringLiteral("SELECT id, name, email, status, created_at, balance\n"
+                       "FROM users\n"
+                       "ORDER BY created_at DESC;"));
+
+    auto* resultGrid = createDataGrid(
+        splitter,
+        {
+            QStringLiteral("id"),
+            QStringLiteral("name"),
+            QStringLiteral("email"),
+            QStringLiteral("status"),
+            QStringLiteral("created_at"),
+            QStringLiteral("balance"),
+        },
+        usersRows());
+    resultGrid->setColumnWidth(0, 80);
+    resultGrid->setColumnWidth(1, 130);
+    resultGrid->setColumnWidth(2, 220);
+    resultGrid->setColumnWidth(4, 180);
+
+    splitter->addWidget(queryEditor_);
+    splitter->addWidget(resultGrid);
+    splitter->setSizes({330, 420});
+    layout->addWidget(splitter, 1);
+    return root;
+}
+
+QWidget* MainWindow::makeAutomationDocument() {
+    auto* root = new QWidget();
     auto* layout = new QVBoxLayout(root);
     layout->setContentsMargins(10, 10, 10, 10);
     layout->setSpacing(8);
@@ -53,7 +600,6 @@ QWidget* makeAutomationView(QWidget* parent) {
     steps->setHeaderLabels({QStringLiteral("Step"), QStringLiteral("State")});
     steps->setRootIsDecorated(false);
     steps->setUniformRowHeights(true);
-    steps->header()->setStretchLastSection(false);
     steps->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     steps->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
 
@@ -68,342 +614,45 @@ QWidget* makeAutomationView(QWidget* parent) {
     }
 
     layout->addWidget(steps, 1);
-
-    auto* footer = new QLabel(QStringLiteral("Last run  2.4 s   ·   isolated runner   ·   mock pipeline"), root);
-    footer->setObjectName(QStringLiteral("odwSecondaryText"));
-    layout->addWidget(footer);
     return root;
-}
-
-QWidget* makeVcsView(QWidget* parent) {
-    auto* root = new QWidget(parent);
-    auto* layout = new QVBoxLayout(root);
-    layout->setContentsMargins(10, 10, 10, 10);
-    layout->setSpacing(8);
-
-    auto* tree = new QTreeWidget(root);
-    tree->setColumnCount(2);
-    tree->setHeaderLabels({QStringLiteral("Git"), QStringLiteral("Value")});
-    tree->setRootIsDecorated(false);
-    tree->setUniformRowHeights(true);
-    tree->header()->setStretchLastSection(true);
-
-    const QList<QPair<QString, QString>> rows{
-        {QStringLiteral("Repository"), QStringLiteral("open-database-workspace")},
-        {QStringLiteral("Branch"), QStringLiteral("design/playground-v0.1")},
-        {QStringLiteral("Working tree"), QStringLiteral("clean after publish")},
-        {QStringLiteral("Upstream"), QStringLiteral("origin")},
-    };
-    for (const auto& [name, value] : rows) {
-        new QTreeWidgetItem(tree, {name, value});
-    }
-
-    layout->addWidget(tree, 1);
-
-    auto* hint = new QLabel(
-        QStringLiteral("ODW exposes useful repository context; deeper Git work can hand off to SmartGit."),
-        root);
-    hint->setWordWrap(true);
-    hint->setObjectName(QStringLiteral("odwSecondaryText"));
-    layout->addWidget(hint);
-    return root;
-}
-
-QTextEdit* makeLogView(QWidget* parent) {
-    auto* logs = new QTextEdit(parent);
-    logs->setReadOnly(true);
-    logs->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    logs->setPlainText(
-        QStringLiteral("12:00:00  workspace  restored playground layout\n"
-                       "12:00:01  connector  PostgreSQL mock capability manifest ready\n"
-                       "12:00:02  query      mock execution completed · 12 rows\n"
-                       "12:00:03  automation normalize.py completed · 2.4 s"));
-    return logs;
-}
-
-} // namespace
-
-MainWindow::MainWindow(bool restorePersistentState, QWidget* parent)
-    : QMainWindow(parent),
-      persistTimer_(new QTimer(this)),
-      persistenceEnabled_(restorePersistentState) {
-    setWindowTitle(QStringLiteral("ODW — Open Database Workspace"));
-    resize(1440, 900);
-
-    setDockNestingEnabled(true);
-    setDockOptions(QMainWindow::AnimatedDocks |
-                   QMainWindow::AllowNestedDocks |
-                   QMainWindow::AllowTabbedDocks |
-                   QMainWindow::GroupedDragging);
-
-    buildPlaygroundWorkspace();
-    wireDurableState();
-    if (persistenceEnabled_) {
-        restoreWorkspace();
-    }
-}
-
-QDockWidget* MainWindow::createDock(const QString& title,
-                                    const QString& objectName,
-                                    QWidget* content) {
-    auto* dock = new QDockWidget(title, this);
-    dock->setObjectName(objectName);
-    dock->setAllowedAreas(Qt::AllDockWidgetAreas);
-    dock->setFeatures(QDockWidget::DockWidgetClosable |
-                      QDockWidget::DockWidgetMovable |
-                      QDockWidget::DockWidgetFloatable);
-    dock->setWidget(content);
-    return dock;
-}
-
-void MainWindow::buildPlaygroundWorkspace() {
-    auto* toolbar = addToolBar(QStringLiteral("Workspace"));
-    toolbar->setObjectName(QStringLiteral("odwMainToolbar"));
-    toolbar->setMovable(false);
-    toolbar->setFloatable(false);
-
-    auto* connectionAction = toolbar->addAction(QStringLiteral("＋ Connection"));
-    auto* runAction = toolbar->addAction(QStringLiteral("▶ Run"));
-    auto* stopAction = toolbar->addAction(QStringLiteral("■ Stop"));
-    toolbar->addSeparator();
-    auto* appearanceAction = toolbar->addAction(QStringLiteral("Appearance"));
-
-    stopAction->setEnabled(false);
-    connect(connectionAction, &QAction::triggered, this, [this] {
-        statusBar()->showMessage(QStringLiteral("Connection editor is the next connector-facing slice."), 3000);
-    });
-    connect(appearanceAction, &QAction::triggered, this, [this] {
-        statusBar()->showMessage(QStringLiteral("Appearance tool uses live semantic theme tokens."), 3000);
-    });
-
-    auto* canvas = new QWidget(this);
-    canvas->setObjectName(QStringLiteral("odwCanvas"));
-    auto* canvasLayout = new QVBoxLayout(canvas);
-    canvasLayout->setContentsMargins(48, 48, 48, 48);
-    canvasLayout->setSpacing(8);
-    canvasLayout->addStretch(1);
-
-    auto* title = new QLabel(QStringLiteral("ODW Playground"), canvas);
-    title->setObjectName(QStringLiteral("odwEmptyTitle"));
-    title->setAlignment(Qt::AlignCenter);
-    auto* subtitle = new QLabel(
-        QStringLiteral("A user-first workspace for data.\n"
-                       "Dock, tab, detach and resize every surrounding tool."),
-        canvas);
-    subtitle->setObjectName(QStringLiteral("odwEmptySubtitle"));
-    subtitle->setAlignment(Qt::AlignCenter);
-    canvasLayout->addWidget(title);
-    canvasLayout->addWidget(subtitle);
-    canvasLayout->addStretch(1);
-    setCentralWidget(canvas);
-
-    auto* databases = new QTreeWidget(this);
-    databases->setHeaderHidden(true);
-    databases->setIndentation(14);
-    databases->setUniformRowHeights(true);
-    databases->setMinimumWidth(120);
-
-    auto* connection = new QTreeWidgetItem(databases, {QStringLiteral("PostgreSQL · local")});
-    auto* schemas = new QTreeWidgetItem(connection, {QStringLiteral("Schemas")});
-    auto* publicSchema = new QTreeWidgetItem(schemas, {QStringLiteral("public")});
-    auto* tables = new QTreeWidgetItem(publicSchema, {QStringLiteral("Tables")});
-    new QTreeWidgetItem(tables, {QStringLiteral("users")});
-    new QTreeWidgetItem(tables, {QStringLiteral("orders")});
-    auto* views = new QTreeWidgetItem(publicSchema, {QStringLiteral("Views")});
-    new QTreeWidgetItem(views, {QStringLiteral("recent_orders")});
-    new QTreeWidgetItem(publicSchema, {QStringLiteral("Functions")});
-    connection->setExpanded(true);
-    schemas->setExpanded(true);
-    publicSchema->setExpanded(true);
-    tables->setExpanded(true);
-    views->setExpanded(true);
-
-    auto* queryRoot = new QWidget(this);
-    auto* queryLayout = new QVBoxLayout(queryRoot);
-    queryLayout->setContentsMargins(8, 8, 8, 8);
-    queryLayout->setSpacing(6);
-    auto* queryContext = new QLabel(QStringLiteral("PostgreSQL · local   /   public"), queryRoot);
-    queryContext->setObjectName(QStringLiteral("odwSecondaryText"));
-    queryLayout->addWidget(queryContext);
-
-    queryEditor_ = new QTextEdit(queryRoot);
-    queryEditor_->setAcceptRichText(false);
-    queryEditor_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    queryEditor_->setPlaceholderText(QStringLiteral("Write SQL…"));
-    queryEditor_->setPlainText(
-        QStringLiteral("SELECT id, name, email, status, created_at, balance\n"
-                       "FROM users\n"
-                       "ORDER BY created_at DESC;"));
-    queryLayout->addWidget(queryEditor_, 1);
-
-    auto* resultsRoot = new QWidget(this);
-    auto* resultsLayout = new QVBoxLayout(resultsRoot);
-    resultsLayout->setContentsMargins(8, 8, 8, 8);
-    resultsLayout->setSpacing(6);
-
-    auto* filterRow = new QWidget(resultsRoot);
-    auto* filterLayout = new QHBoxLayout(filterRow);
-    filterLayout->setContentsMargins(0, 0, 0, 0);
-    filterLayout->setSpacing(8);
-    auto* filter = new QLineEdit(filterRow);
-    filter->setObjectName(QStringLiteral("odwGridFilter"));
-    filter->setPlaceholderText(QStringLiteral("Filter visible rows…"));
-    auto* rowCount = new QLabel(QStringLiteral("12 rows · mock result"), filterRow);
-    rowCount->setObjectName(QStringLiteral("odwSecondaryText"));
-    filterLayout->addWidget(filter, 1);
-    filterLayout->addWidget(rowCount);
-    resultsLayout->addWidget(filterRow);
-
-    auto* results = new QTableWidget(12, 6, resultsRoot);
-    results->setAlternatingRowColors(true);
-    results->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    results->setSelectionBehavior(QAbstractItemView::SelectItems);
-    results->verticalHeader()->setVisible(false);
-    results->verticalHeader()->setDefaultSectionSize(30);
-    results->horizontalHeader()->setStretchLastSection(true);
-    results->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    results->setHorizontalHeaderLabels({
-        QStringLiteral("id"),
-        QStringLiteral("name"),
-        QStringLiteral("email"),
-        QStringLiteral("status"),
-        QStringLiteral("created_at"),
-        QStringLiteral("balance"),
-    });
-
-    for (int row = 0; row < results->rowCount(); ++row) {
-        const int id = 101 + row;
-        const QString name = QStringLiteral("user_%1").arg(id);
-        const QString email = row == 4 ? QStringLiteral("NULL")
-                                       : QStringLiteral("user%1@example.dev").arg(id);
-        const QString status = row % 3 == 0 ? QStringLiteral("pending")
-                                            : QStringLiteral("active");
-        const QString date = QStringLiteral("2026-09-%1  1%2:%3")
-                                 .arg(6 - (row % 6), 2, 10, QLatin1Char('0'))
-                                 .arg(row % 10)
-                                 .arg((row * 7) % 60, 2, 10, QLatin1Char('0'));
-        const QString balance = row == 8 ? QStringLiteral("NULL")
-                                         : QStringLiteral("%1.%2")
-                                               .arg(120 + row * 17)
-                                               .arg((row * 13) % 100, 2, 10, QLatin1Char('0'));
-
-        const QStringList values{
-            QString::number(id), name, email, status, date, balance,
-        };
-        for (int column = 0; column < values.size(); ++column) {
-            auto* item = new QTableWidgetItem(values.at(column));
-            if (values.at(column) == QStringLiteral("NULL")) {
-                QFont italic = item->font();
-                italic.setItalic(true);
-                item->setFont(italic);
-                item->setToolTip(QStringLiteral("SQL NULL"));
-            }
-            results->setItem(row, column, item);
-        }
-    }
-    results->setColumnWidth(0, 72);
-    results->setColumnWidth(1, 130);
-    results->setColumnWidth(2, 220);
-    results->setColumnWidth(3, 100);
-    results->setColumnWidth(4, 180);
-    resultsLayout->addWidget(results, 1);
-
-    connect(filter, &QLineEdit::textChanged, results, [results](const QString& text) {
-        for (int row = 0; row < results->rowCount(); ++row) {
-            bool match = text.trimmed().isEmpty();
-            for (int column = 0; !match && column < results->columnCount(); ++column) {
-                const auto* item = results->item(row, column);
-                match = item != nullptr && item->text().contains(text, Qt::CaseInsensitive);
-            }
-            results->setRowHidden(row, !match);
-        }
-    });
-
-    auto* inspector = new views::AdaptiveInspector(this);
-
-    auto* databaseDock = createDock(QStringLiteral("Connections"),
-                                    QStringLiteral("odw.view.connections"),
-                                    databases);
-    auto* queryDock = createDock(QStringLiteral("Query"),
-                                 QStringLiteral("odw.view.query"),
-                                 queryRoot);
-    resultsDock_ = createDock(QStringLiteral("Results"),
-                              QStringLiteral("odw.view.results"),
-                              resultsRoot);
-    inspectorDock_ = createDock(QStringLiteral("Inspector"),
-                                QStringLiteral("odw.view.inspector"),
-                                inspector);
-    automationDock_ = createDock(QStringLiteral("Automation"),
-                                 QStringLiteral("odw.view.automation"),
-                                 makeAutomationView(this));
-    vcsDock_ = createDock(QStringLiteral("Version control"),
-                          QStringLiteral("odw.view.vcs"),
-                          makeVcsView(this));
-    logsDock_ = createDock(QStringLiteral("Tasks / Logs"),
-                           QStringLiteral("odw.view.logs"),
-                           makeLogView(this));
-
-    addDockWidget(Qt::LeftDockWidgetArea, databaseDock);
-    addDockWidget(Qt::RightDockWidgetArea, inspectorDock_);
-    addDockWidget(Qt::BottomDockWidgetArea, resultsDock_);
-    addDockWidget(Qt::TopDockWidgetArea, queryDock);
-
-    splitDockWidget(databaseDock, queryDock, Qt::Horizontal);
-    splitDockWidget(queryDock, inspectorDock_, Qt::Horizontal);
-    splitDockWidget(queryDock, resultsDock_, Qt::Vertical);
-
-    addDockWidget(Qt::BottomDockWidgetArea, automationDock_);
-    tabifyDockWidget(resultsDock_, automationDock_);
-    addDockWidget(Qt::BottomDockWidgetArea, logsDock_);
-    tabifyDockWidget(resultsDock_, logsDock_);
-
-    addDockWidget(Qt::RightDockWidgetArea, vcsDock_);
-    tabifyDockWidget(inspectorDock_, vcsDock_);
-
-    resizeDocks({databaseDock, queryDock, inspectorDock_}, {250, 820, 280}, Qt::Horizontal);
-    resizeDocks({queryDock, resultsDock_}, {480, 310}, Qt::Vertical);
-    resultsDock_->raise();
-    inspectorDock_->raise();
-
-    connect(runAction, &QAction::triggered, this, [this] {
-        resultsDock_->show();
-        resultsDock_->raise();
-        statusBar()->showMessage(QStringLiteral("Mock query completed · 12 rows · 18 ms"), 3000);
-    });
-
-    statusBar()->showMessage(QStringLiteral("Playground · mock data · no live database connection"));
 }
 
 void MainWindow::applyPresentationScenario(const QString& scenario) {
-    if (scenario == QStringLiteral("narrow-inspector") && inspectorDock_ != nullptr) {
-        inspectorDock_->show();
-        inspectorDock_->raise();
-        resizeDocks({inspectorDock_}, {125}, Qt::Horizontal);
-    } else if (scenario == QStringLiteral("automation") && automationDock_ != nullptr) {
-        automationDock_->show();
-        automationDock_->raise();
-    } else if (scenario == QStringLiteral("vcs") && vcsDock_ != nullptr) {
-        vcsDock_->show();
-        vcsDock_->raise();
+    if (scenario == QStringLiteral("narrow-inspector")) {
+        resize(1100, 720);
+        if (inspector_ != nullptr) {
+            inspector_->setMaximumWidth(135);
+        }
+        if (inspectorDock_ != nullptr) {
+            inspectorDock_->raise();
+        }
+    } else if (scenario == QStringLiteral("automation")) {
+        openDocument(QStringLiteral("automation"));
+    } else if (scenario == QStringLiteral("query")) {
+        openDocument(QStringLiteral("query"));
+    } else {
+        openDocument(QStringLiteral("object:users"));
     }
+}
+
+void MainWindow::wireDockPersistence(DockWidget* dock) {
+    connect(dock, &DockWidget::isFloatingChanged, this, [this](bool) { schedulePersist(); });
+    connect(dock, &DockWidget::isOpenChanged, this, [this](bool) { schedulePersist(); });
+    connect(dock, &DockWidget::isCurrentTabChanged, this, [this](bool) { schedulePersist(); });
 }
 
 void MainWindow::wireDurableState() {
     persistTimer_->setSingleShot(true);
-    persistTimer_->setInterval(75);
+    persistTimer_->setInterval(100);
     connect(persistTimer_, &QTimer::timeout, this, &MainWindow::persistWorkspace);
 
-    for (auto* dock : findChildren<QDockWidget*>()) {
-        connect(dock, &QDockWidget::dockLocationChanged, this, [this] { schedulePersist(); });
-        connect(dock, &QDockWidget::topLevelChanged, this, [this] { schedulePersist(); });
-        connect(dock, &QDockWidget::visibilityChanged, this, [this] { schedulePersist(); });
+    if (queryEditor_ != nullptr) {
+        connect(queryEditor_, &QTextEdit::textChanged, this, [this] { schedulePersist(); });
     }
-
-    connect(queryEditor_, &QTextEdit::textChanged, this, [this] { schedulePersist(); });
 }
 
 bool MainWindow::event(QEvent* event) {
-    const bool handled = QMainWindow::event(event);
+    const bool handled = KDDockWidgets::QtWidgets::MainWindow::event(event);
 
     if (persistenceEnabled_ && persistTimer_ != nullptr &&
         (event->type() == QEvent::Move ||
@@ -435,13 +684,15 @@ void MainWindow::persistWorkspace() {
         return;
     }
 
+    KDDockWidgets::LayoutSaver saver;
+    const QByteArray layoutState = saver.serializeLayout();
+
     QJsonObject root;
-    root.insert(QStringLiteral("schemaVersion"), 1);
-    root.insert(QStringLiteral("geometry"),
-                QString::fromLatin1(saveGeometry().toBase64()));
-    root.insert(QStringLiteral("qtMainWindowState"),
-                QString::fromLatin1(saveState(kLayoutStateVersion).toBase64()));
-    root.insert(QStringLiteral("queryDraft"), queryEditor_->toPlainText());
+    root.insert(QStringLiteral("schemaVersion"), 2);
+    root.insert(QStringLiteral("dockLayout"),
+                QString::fromLatin1(layoutState.toBase64()));
+    root.insert(QStringLiteral("queryDraft"),
+                queryEditor_ != nullptr ? queryEditor_->toPlainText() : QString());
 
     QSaveFile file(workspaceStatePath());
     if (!file.open(QIODevice::WriteOnly)) {
@@ -465,31 +716,28 @@ void MainWindow::restoreWorkspace() {
     }
 
     const QJsonObject root = document.object();
-    if (root.value(QStringLiteral("schemaVersion")).toInt() != 1) {
+    if (root.value(QStringLiteral("schemaVersion")).toInt() != 2) {
         return;
     }
 
-    const QByteArray geometry = QByteArray::fromBase64(
-        root.value(QStringLiteral("geometry")).toString().toLatin1());
-    const QByteArray windowState = QByteArray::fromBase64(
-        root.value(QStringLiteral("qtMainWindowState")).toString().toLatin1());
-
-    if (!geometry.isEmpty()) {
-        restoreGeometry(geometry);
-    }
-    if (!windowState.isEmpty()) {
-        restoreState(windowState, kLayoutStateVersion);
+    if (queryEditor_ != nullptr) {
+        const QSignalBlocker blocker(queryEditor_);
+        queryEditor_->setPlainText(root.value(QStringLiteral("queryDraft")).toString());
     }
 
-    const QSignalBlocker blocker(queryEditor_);
-    queryEditor_->setPlainText(root.value(QStringLiteral("queryDraft")).toString());
+    const QByteArray layoutState = QByteArray::fromBase64(
+        root.value(QStringLiteral("dockLayout")).toString().toLatin1());
+    if (!layoutState.isEmpty()) {
+        KDDockWidgets::LayoutSaver saver;
+        saver.restoreLayout(layoutState);
+    }
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (persistenceEnabled_) {
         persistWorkspace();
     }
-    QMainWindow::closeEvent(event);
+    KDDockWidgets::QtWidgets::MainWindow::closeEvent(event);
 }
 
 } // namespace odw::ui

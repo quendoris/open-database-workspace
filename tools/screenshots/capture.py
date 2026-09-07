@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capture deterministic ODW playground screenshots with build metadata."""
+"""Capture deterministic ODW workspace screenshots with build metadata."""
 
 from __future__ import annotations
 
@@ -15,9 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 SCENARIOS: dict[str, dict[str, str]] = {
     "default": {"size": "1600x1000", "scenario": "default"},
-    "narrow-inspector": {"size": "1200x760", "scenario": "narrow-inspector"},
+    "narrow-inspector": {"size": "1100x720", "scenario": "narrow-inspector"},
     "automation": {"size": "1440x900", "scenario": "automation"},
-    "vcs": {"size": "1440x900", "scenario": "vcs"},
+    "query": {"size": "1440x900", "scenario": "query"},
 }
 
 
