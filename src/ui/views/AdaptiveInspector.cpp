@@ -24,18 +24,17 @@ const QStringList kExpandedKeys{
     QStringLiteral("Connector source"),
 };
 
-const QStringList kBaseValues{
-    QStringLiteral("table"),
-    QStringLiteral("unknown"),
-    QStringLiteral("id"),
-    QStringLiteral("prototype connector"),
-};
-
 } // namespace
 
 AdaptiveInspector::AdaptiveInspector(QWidget* parent)
     : QWidget(parent),
-      layout_(new QGridLayout(this)) {
+      layout_(new QGridLayout(this)),
+      valueTexts_{
+          QStringLiteral("table"),
+          QStringLiteral("unknown"),
+          QStringLiteral("id"),
+          QStringLiteral("prototype connector"),
+      } {
     setObjectName(QStringLiteral("odwAdaptiveInspector"));
     setMinimumWidth(96);
 
@@ -48,8 +47,7 @@ AdaptiveInspector::AdaptiveInspector(QWidget* parent)
         auto* key = new QLabel(kExpandedKeys.at(static_cast<qsizetype>(index)), this);
         key->setObjectName(QStringLiteral("odwInspectorKey"));
 
-        auto* value = new widgets::ElidedLabel(
-            kBaseValues.at(static_cast<qsizetype>(index)), this);
+        auto* value = new widgets::ElidedLabel(valueTexts_[index], this);
         value->setObjectName(QStringLiteral("odwInspectorValue"));
 
         keys_[index] = key;
@@ -57,6 +55,14 @@ AdaptiveInspector::AdaptiveInspector(QWidget* parent)
     }
 
     applyPresentation(PresentationMode::Expanded);
+}
+
+void AdaptiveInspector::setObjectDetails(const QString& objectType,
+                                         const QString& rows,
+                                         const QString& primaryKey,
+                                         const QString& source) {
+    valueTexts_ = {objectType, rows, primaryKey, source};
+    applyPresentation(mode_);
 }
 
 AdaptiveInspector::PresentationMode AdaptiveInspector::presentationMode() const noexcept {
@@ -102,7 +108,7 @@ void AdaptiveInspector::applyPresentation(PresentationMode mode) {
     for (std::size_t index = 0; index < keys_.size(); ++index) {
         keys_[index]->setText((expanded ? kExpandedKeys : kCompactKeys)
                                   .at(static_cast<qsizetype>(index)));
-        values_[index]->setFullText(kBaseValues.at(static_cast<qsizetype>(index)));
+        values_[index]->setFullText(valueTexts_[index]);
 
         if (mode == PresentationMode::Compact) {
             const int row = static_cast<int>(index) * 2;

@@ -16,6 +16,20 @@ set(CMAKE_AUTORCC ON)
 
 find_package(Qt6 6.4 REQUIRED COMPONENTS Core Widgets)
 
+include(FetchContent)
+set(KDDockWidgets_QT6 ON CACHE BOOL "" FORCE)
+set(KDDockWidgets_FRONTENDS "qtwidgets" CACHE STRING "" FORCE)
+set(KDDockWidgets_DEVELOPER_MODE OFF CACHE BOOL "" FORCE)
+set(KDDockWidgets_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
+set(KDDockWidgets_STATIC ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    kddockwidgets
+    GIT_REPOSITORY https://github.com/KDAB/KDDockWidgets.git
+    GIT_TAG v2.4.1
+    GIT_SHALLOW TRUE
+)
+FetchContent_MakeAvailable(kddockwidgets)
+
 function(odw_enable_warnings target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive-)
@@ -50,6 +64,7 @@ add_executable(odw
 
 target_link_libraries(odw PRIVATE
     odw_core
+    KDAB::kddockwidgets
     Qt6::Core
     Qt6::Widgets
 )

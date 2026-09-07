@@ -1,6 +1,8 @@
 #include "../ui/MainWindow.hpp"
 #include "../ui/theme/VisualTheme.hpp"
 
+#include <kddockwidgets/KDDockWidgets.h>
+
 #include <QApplication>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -65,6 +67,7 @@ int main(int argc, char* argv[]) {
     parser.addOption(freshWorkspaceOption);
     parser.process(app);
 
+    KDDockWidgets::initFrontend(KDDockWidgets::FrontendType::QtWidgets);
     odw::ui::theme::apply(app, odw::ui::theme::defaultDarkCyan());
 
     const bool screenshotMode = parser.isSet(screenshotOption);
@@ -83,7 +86,7 @@ int main(int argc, char* argv[]) {
         const QString outputPath = QFileInfo(parser.value(screenshotOption)).absoluteFilePath();
         QDir().mkpath(QFileInfo(outputPath).absolutePath());
 
-        QTimer::singleShot(300, &app, [&app, &window, outputPath] {
+        QTimer::singleShot(450, &app, [&app, &window, outputPath] {
             const bool saved = window.grab().save(outputPath, "PNG");
             QCoreApplication::exit(saved ? 0 : 3);
         });
