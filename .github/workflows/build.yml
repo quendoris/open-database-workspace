@@ -21,7 +21,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ninja-build \
-            qt6-base-dev
+            libxkbcommon-dev \
+            qt6-base-dev \
+            qt6-base-private-dev
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
